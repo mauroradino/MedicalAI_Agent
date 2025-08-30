@@ -1,13 +1,15 @@
 from audio_processor import main as audio_main
 from audio_generator import generate_audio
-from agents import Agent, function_tool
+from agents import Agent, function_tool, Runner
 from dotenv import load_dotenv
-from agents import Runner
 import pygame, time
 import requests
 import asyncio
 import os
 load_dotenv()
+
+conversation = []
+
 
 def create_agent():
     @function_tool
@@ -23,7 +25,8 @@ def create_agent():
                 time.sleep(0.1)
             pygame.mixer.music.unload()    
             pygame.mixer.quit()    
-            os.remove(path)    
+            os.remove(path)   
+            conversation.append(("CuraAI: ", ai_response)) 
             return ai_response
         except Exception as e:
             print(f"TOOL ERROR: {e}")
@@ -89,6 +92,8 @@ def create_agent():
     if the user asks you about genetic conditions, use the 'genetics_conditions' tool to get information about it, and then use the 'ai_response' tool to respond to the user.
     The user only can ask you about this conditions: ['hereditary-breast-cancer','lynch-syndrome','familial-melanoma','li-fraumeni-syndrome', 'fanconi-anemia]
     
+    Here is the conversation so far: {conversation}
+
     The user's message is: {user_input}
     """
 
@@ -99,9 +104,11 @@ def create_agent():
 async def main():
     while True:
         user_input = audio_main()
+        conversation.append(("User: ", user_input))
         agente = create_agent()
         response = await Runner.run(agente, input=user_input)
         if response.final_output.lower() == "goodbye, have a nice day!":
+            print(conversation)
             break
 
 if __name__ == "__main__":
