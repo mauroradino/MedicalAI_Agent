@@ -10,8 +10,11 @@ load_dotenv()
 
 conversation = []
 
+def render_conversation(pairs, max_turns=20):
+    last = pairs[-max_turns:]
+    return "\n".join(f"{who}{text}" for who, text in last)
 
-def create_agent():
+def create_agent(conversation_text, user_input):
     @function_tool
     def assistant_response(ai_response: str):
         """Generate a response to a user input"""
@@ -19,34 +22,19 @@ def create_agent():
             print("[USING TOOL]")
             path = generate_audio(ai_response)
             pygame.mixer.init()
-            pygame.mixer.music.load(path)  
+            pygame.mixer.music.load(path)
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy():
                 time.sleep(0.1)
-            pygame.mixer.music.unload()    
-            pygame.mixer.quit()    
-            os.remove(path)   
-            conversation.append(("CuraAI: ", ai_response)) 
+            pygame.mixer.music.unload()
+            pygame.mixer.quit()
+            os.remove(path)
+            conversation.append(("CuraAI: ", ai_response))
             return ai_response
         except Exception as e:
             print(f"TOOL ERROR: {e}")
             return "TOOL ERROR"
-        
-    @function_tool
-    def genetics_conditions(condition: str):
-        """Provide information about genetic conditions."""
-        print("[USING CONDITIONS TOOL]")
-        res = requests.get(f"https://medlineplus.gov/download/genetics/condition/{condition}.json")
-        data = res.json()
-        response = data["text-list"][0]["text"]["html"]
-        return response
-    
-    @function_tool
-    def take_symptoms(simptoms: list[str]):
-        """Detect symptoms from a patient."""
-        print("[USING SYMPTOMS TOOL]")
-        return f"Detected symptoms: {', '.join(simptoms)}"
-    
+
     @function_tool
     def get_medical_articles(symptoms: str):
         """Fetch medical articles related to symptoms from PubMed."""
@@ -54,60 +42,69 @@ def create_agent():
         try:
             from pubmed import get_medical_articles as fetch_articles
             articles = fetch_articles(symptoms)
-            if articles:
-                return articles
-            else:
-                return "No relevant articles found."
+            return articles if articles else "No relevant articles found."
         except Exception as e:
             print(f"PUBMED TOOL ERROR: {e}")
             return "PUBMED TOOL ERROR"
-        
+
     @function_tool
-    def finish_conversation():
-        """End the conversation."""
-        return "Goodbye, have a nice day!"
+    def search_by_pmid(pmid: str):
+        """Fetch detailed information about a medical article using its PubMed ID (PMID)."""
+        print("[USING SEARCH BY PMID TOOL]")
+        try:
+            fetch_url = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi'
+            fetch_params = {
+                'db': 'pubmed',
+                'id': pmid,
+                'retmode': 'json',
+                'rettype': 'abstract'
+            }
+            fetch_response = requests.get(fetch_url, params=fetch_params)
+            return fetch_response.text
+        except Exception as e:
+            print(f"SEARCH BY PMID TOOL ERROR: {e}")
+            return "SEARCH BY PMID TOOL ERROR"
 
-    prompt="""
-    You function like a voice assistant; you have to converse with the user.
-    You have a tool called 'ai_response', which you have to use every time you want to respond to the user.
+    prompt = f"""
+        You function like a medical voice assistant; you have to converse with the user.
+        You have a tool called 'assistant_response', which you have to use every time you want to respond to the user.
+        Your name is CuraAI.
 
-    Your name is CuraAI
+        Here is the conversation so far:
+        {conversation_text}
 
-    When the patient tells you their symptoms, you have to use the 'take_symptoms' tool.
+        Maintain a conversation with the patient, ask questions to complete the information about their condition, do not use tools until you have complete information to generate a good diagnosis.
 
-    You have a tool called 'get_medical_article' to obtain information about medicine, you have to use the symptoms that the patient tells you, use them as an argument in the tool and based on that response, return information to the user.
-    Don't name the articles the tool 'get_medical_article' returns, just use them as context for what to answer.
-    
-    You have a tool called 'finish_conversation', it is to end the conversation, if the client says goodbye, respond using that tool. Use the response of that tool as argument in the 'ai_response' tool to say goodbye to the user.
+        if the user says goodbye, return "Goodbye, have a nice day!" using the 'assistant_response' tool.
+        The minimum information required to make a diagnosis must be:
+        - All symptoms (re-ask once to confirm the symptoms are present)
+        - How long the patient has had this condition
+        - Family history, including diabetes, hypertension, or high blood pressure
 
-    Workflow example:
-    -User: "Hello chat, how are you?"
-    -Assistant: [processes information and uses that information as an argument in the 'ai_response' tool]
+        After you have complete info, use get_medical_articles(symptoms) to fetch PubMed results.
+        From those results, pick the most relevant PMID and call search_by_pmid(pmid) to get details, then summarize them for the user. Always speak via assistant_response.
 
-    -User: "My head hurts, I've had a fever and runny nose since yesterday."
-    -Assistant: [uses the 'take_symptoms' tool with ['head hurt', 'fever', 'runny nose'] as an argument]
-    -Assistant: [uses the 'get_medical_articles' tool with 'head hurt, fever, runny nose' as an argument]
-    -Assistant: [processes information and uses that information as an argument in the 'ai_response' tool]
+        The user's message is:
+        {user_input}
 
-    if the user asks you about genetic conditions, use the 'genetics_conditions' tool to get information about it, and then use the 'ai_response' tool to respond to the user.
-    The user only can ask you about this conditions: ['hereditary-breast-cancer','lynch-syndrome','familial-melanoma','li-fraumeni-syndrome', 'fanconi-anemia]
-    
-    Here is the conversation so far: {conversation}
+        """
 
-    The user's message is: {user_input}
-    """
-
-    agent = Agent(name="CuraAI", model="gpt-4o-mini", instructions=prompt, tools=[assistant_response, genetics_conditions, take_symptoms, get_medical_articles, finish_conversation])
+    agent = Agent(
+        name="CuraAI",
+        model="gpt-4o-mini",
+        instructions=prompt,
+        tools=[assistant_response, get_medical_articles, search_by_pmid]
+    )
     return agent
-
 
 async def main():
     while True:
         user_input = audio_main()
         conversation.append(("User: ", user_input))
-        agente = create_agent()
+        conv_text = render_conversation(conversation)
+        agente = create_agent(conv_text, user_input)
         response = await Runner.run(agente, input=user_input)
-        if response.final_output.lower() == "goodbye, have a nice day!":
+        if isinstance(response.final_output, str) and response.final_output.strip().lower() == "goodbye, have a nice day!":
             print(conversation)
             break
 
